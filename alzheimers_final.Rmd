@@ -1,0 +1,180 @@
+---
+title: "Final Project: Alzheimers"
+author: "McLain Wilkinson, Kyi Win, Julio Monge, Irvin Mull"
+date: "12/11/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+```{r basicfcn, include=FALSE}
+# can add quietly=T option to the require() function
+loadPkg = function(x) { if (!require(x,character.only=T, quietly =T)) { install.packages(x,dep=T,repos="http://cran.us.r-project.org"); if(!require(x,character.only=T)) stop("Package not found") } }
+
+library(readr)
+```
+Intro
+
+Our interest in epidemiology led us to explore the factors associated with dementia. Given the increasing prevalence of Alzheimer's in the U.S., its severity, and the lack of a cure, it is imperative to understand the causes of this disease, as a means of addressing the risk from an early age. While this topic has already been explored, we nevertheless sought to use the OASIS (Open Access Series of Imaging Studies) dataset to create a model that would examine the probability of developing dementia based on various variables.
+```{r}
+dement <- data.frame(read_csv("~/Desktop/oasis_longitudinal.csv"))
+head(dement)
+```
+```{r}
+str(dement)
+```
+The dataset has 15 different variables with 373 observations. The response we are looking to predict is the "Group" variable with values "nondemented" and "demented". This variable will need to be changed to be numeric, coding "1" for "demented" and "0" for "nondemented". The Subject.ID and MRI.ID columns are of no use, as they are used to identify the subjects and scans. The Hand variable is also not helpful since all of the subjects in the dataset are right-handed. It also doesn't make sense to include the visit column, since this is a time-related variable that could confound the results. Finally, the CDR variable (Clinical Dementia Rating) is a scaled measure of the degree of dementia. We will drop this variable since we are only concerned with finding the presence or dementia and not the degree it manifests itself. The remaining variables are all attributes of the subject, providing a good basis as factors used to predict Alzheimer's. The Male/Female variable will have to be coded to 1/0 so it can be used in the regression. Additionally, all observations containing a NA will need to be removed so these observations can be included to test the regression as well.
+```{r}
+#drop unnecessary columns
+drops <- c("Subject.ID","MRI.ID","Hand","Visit","CDR")
+alzheimers <- dement[,!(names(dement) %in% drops)]
+#code nondemented -> 0 and demented -> 1
+alzheimers$Dement <- as.numeric(factor(dement$Group,levels=c("Nondemented","Demented"))) - 1
+#code female -> 0 and male -> 1
+alzheimers$Sex <- as.numeric(factor(dement$M.F,levels=c("F","M"))) - 1
+#drop old categorical demented/sex columns
+drops2 <- c("Group","M.F")
+alzheimers <- alzheimers[,!(names(alzheimers) %in% drops2)]
+#drop rows with NA values
+alzheimers <- alzheimers[complete.cases(alzheimers),]
+head(alzheimers)
+nrow(alzheimers)
+```
+The dataset now consists of 317 observations of 10 variables after removing unnecessary variables and NA values and converting factor variables to numeric types. Now that the data is in a usable format, we can do an exploratory analysis on the variables available. Let's see a summary of variables as well as visual represenations of each one.
+```{r,echo=FALSE}
+library(ggplot2)
+summary(alzheimers)
+# Age distribution
+ggplot(alzheimers, aes(Age, colour= "red"))+
+  geom_freqpoly(binwidth=5) +ggtitle("Age Distribution")
+# Education distribution
+ggplot(alzheimers, aes(EDUC))+
+  geom_dotplot(binwidth = 0.1, color= "yellow") + ggtitle("Education Distribution")
+# no of participants and their gender vs dementia
+ggplot(alzheimers, aes(Sex, Dement))+
+  geom_count(binwidth= 0.001) + ggtitle("Demented vs Sex") #female - 0, male- 1, nondemented -0 , demented- 
+# eTIV distribution
+boxplot(alzheimers$eTIV, main="Estimated total intracranial volume (mm^3)", xlab= "eTIV", col = "aliceblue")
+# relationship between eTIV and nWBV
+qqplot(alzheimers$nWBV,alzheimers$eTIV, ylab = "Estimated total intracranial volume", xlab="Normalized whole brain volume", main = "eTIV vs nWBV", col = "lightsalmon1")
+# correlation between Social Economic Status and Education
+scatter.smooth(alzheimers$SES, alzheimers$EDUC, main= "Social economics & Education", xlab= "Social econic status (1= High, 5= low)", ylab = "Years of education", col = "plum2")
+ggplot(alzheimers, aes(x=SES, y= EDUC)) + geom_point(size=2, color= "pink", shape=24)+ geom_smooth(method = lm, fill= "yellow") + ggtitle("Socioeconomic Status vs Education")
+# histogram and general EDA
+hist(alzheimers$SES, main = "Socioeconomic Status Distribution", xlab = "SES", col = "gold")
+hist(alzheimers$MMSE, main = "MMSE Distribution", xlab = "MMSE", col = "deeppink")
+hist(alzheimers$nWBV, main = "nWBV Distribution", xlab = "nWBV", col = "purple")
+hist(alzheimers$ASF, main = "ASF Distribution", xlab = "ASF", col = "tomato")
+plot(as.factor(alzheimers$Dement), main = "Demented vs Non Demented", xlab = "Demented (0 = nondemented, 1 = demented)", col = "maroon")
+plot(as.factor(alzheimers$Sex), main = "Sex Distribution", xlab = "Sex (0 = Female, 1 = Male)", col= "steelblue")
+plot(alzheimers)
+```
+
+The data is randomized before dividing the training and test sets. The correlation of the randomized alzheimer's dataset is explored.
+```{r}
+alzheimers_rand <- alzheimers[sample(nrow(alzheimers)),]
+cor(alzheimers_rand)
+```
+
+Now we can begin to search for predictors of Alzheimers (observations in the "demented" group in the original dataset) using regression models. For this particular question, we choose to use a logistic regression. The outcome we are trying to predict is binary in nature, simply whether the patient is demented or not. This type of question lends itself well to logistic regression, allowing us to create a model which provides a probability of dementia based on a number of input variables. In addition, our dataset is sufficiently large so we are able to divide it into training and test sets. With 317 observations, we will put 253 in the training set and 64 in the test set. We will use the training set to fit the model and the test set to assess its accuracy. 
+
+```{r}
+set.seed(200)
+train <- alzheimers_rand[1:253,]
+test <- alzheimers_rand[254:317,]
+nrow(train)
+nrow(test)
+```
+We first run a linear regression to see which variables are significant. 
+```{r}
+loadPkg("leaps")
+loadPkg("ISLR")
+reg.forward <- regsubsets(Dement~., data = alzheimers , method = "forward", nvmax = 11, nbest= 1)
+plot(reg.forward, scale = "adjr2", main = "Adjusted R^2")
+plot(reg.forward, scale = "bic", main = "BIC")
+plot(reg.forward, scale = "Cp", main = "Cp")
+summary(reg.forward)
+```
+
+```{r,echo=FALSE}
+loadPkg("glmnet")
+```
+Let us begin with the full logistic regression using all variables. 
+```{r}
+model <- glm(Dement~.,family=binomial(link="logit"),data=train)
+summary(model)
+```
+Now we will use step-wise variable selection to create a model. This method should result in a better AIC score for the final model. The best model is described at the bottom of the code output. 
+```{r}
+model.null = glm(Dement ~ 1, data=train, family= binomial(link = "logit"))
+model.full = glm(Dement ~  Age+ MMSE + eTIV + nWBV + Sex + MR.Delay + EDUC + SES + ASF, data=train, family = binomial(link="logit"))
+
+step(model.full,scope = list(upper=model.full), direction="both", test="Chisq", data=train)
+```
+The final model found by step-wise selection results in a slightly better AIC than the original full model containing all variables. We will put this best model in a variable called model.final. This is the model we will use to make predictions on the test dataset.
+```{r}
+model.final = glm(Dement ~ Age + MMSE + nWBV + Sex + EDUC, data=train, family = binomial(link="logit"))
+summary(model.final)
+plot(model.final)
+```
+Interpretation
+
+Under the coefficients are parameters for the model. The estimate value (under the intercept estimate) of the logistic regression provides the log of odd ratio. The intercept estimates 65.082 is the null model value when all the variables is zero. For every one unit changes in any of the variables (Age, MMSE, nWBV, Sex, EDUC), the log of odd increases or decreases according to Estimate values. For the final model, age will decrease the log of odd ratio by -0.1556 with one unit increases in age, MMSE will decrease the log odds by -1.2088 with one unit increase in MMSE, nWBV will decrease the log odds by -24.31 with one unit increases in nWBV, being male increases the log odds by 0.9068, and EDUC will decrease the log odds by -0.153 with one unit increase in years of education. The standard error is the estimated variability due to sampling variability. In this case, the standard error for Age is 0.04 and nWBV is 7.37. According to the p values and significant codes, Age, MMSE and nWBV has strong association with Dement than Sex variable. EDUC is not significant according to the p-values and significant codes.
+The Null deviance and Residual deviance tells how the final model is doing against the null model, which only have the intercept. The model.final of Alzheimer's disease has Null deviance of 341.18 and Residual deviance of 146.23. The gap between these two deviance is large meaning the final model is a lot better than the null model. Adding a variable to the model leads to increase in Residual deviance and increase in AIC value in our case. The final model have lowest AIC and significant drop in residual deviance.
+```{r}
+library(popbio)
+logi.hist.plot(alzheimers$MMSE,alzheimers$Dement, boxp=FALSE, type= "histogram", col="gray", main = "Demented vs MMSE")
+logi.hist.plot(alzheimers$nWBV,alzheimers$Dement, boxp=FALSE, type= "histogram", col="gray", main = "Demented vs nWBV")
+logi.hist.plot(alzheimers$Age,alzheimers$Dement, boxp=FALSE, type= "histogram", col="gray", main = "Demented vs Age")
+logi.hist.plot(alzheimers$EDUC,alzheimers$Dement, boxp=FALSE, type= "histogram", col="gray", main = "Demented vs EDUC")
+logi.hist.plot(alzheimers$Sex,alzheimers$Dement, boxp=FALSE, type= "histogram", col="gray", main = "Demented vs Sex")
+```
+The logistic curve with histogram of each variable of the final model and demented is created above to see the probablity of being demented.
+```{r}
+exp(coef(model.final))
+```
+
+Y =  65.083 - 0.156(Age) - 1.209 (MMSE) - 24.308 (nWBV) + 0.907 (Sex ) -0.153 (EDUC)
+
+Where Y = logit ( p/ (1-p)) 
+
+The above equation is generated from model.final output and  exponential coefficient of the model.final is calculated to figure out by what factor each coefficient increases with one unit increases in independent variable.
+
+Use model.final to make predictions on the test dataset. 
+```{r}
+results <- predict(model.final,newdata=test,type='response')
+results_decision <- ifelse(results > 0.5,1,0)
+plot(results,test$Dement,main="Predicted Results")
+
+misClasificError <- mean(results_decision != test$Dement)
+accuracy <- 1-misClasificError
+print(paste('Accuracy',accuracy))
+```
+The final model produces a probability of dementia for each of the 64 observations in the test set. We use a threshold of p = 0.5 to classify subjects as nondemented or demented. Probabilities greater than 0.5 represent a prediction of dementia while probabilities less than 0.5 predict non-demented patients. Comparing the predicted values to the actual values provided in the test set, the model yields a prediction accuracy rate of ~80%. This value suggests the model is successful at predicting dementia on a new set of subjects. 
+
+ROC and AUC
+ROC curve is generated to figured out the AUC, area under the curve, which tells the model's predictive ability. As the model is with good predictive ability is closer to 1, we can say that our model has good predictive ability since the model's AUC value is 0.927.
+```{r}
+alzheimers_roc <- glm(Dement ~ Age + MMSE + nWBV + Sex + EDUC, data=test, family = "binomial")
+result1= predict(alzheimers_roc, type= c("response"))
+library("ROCR")
+pred <- prediction(result1,test$Dement)
+pref <- performance (pred, measure = "tpr", x.measure= "fpr")
+plot (pref, col= rainbow(7), main = "ROC curve Demented")
+```
+```{r}
+auc <- performance(pred, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+While we were generally satisfied with the results, we would have naturally preferred access to a larger data set to build our model. The accuracy of our model would benefit from access to a greater number of participants, since the sample from the OASIS data was somewhat small. We also would have liked to have examined more potential predictors, and were limited by what was available in the OASIS data set. For example, variables concerning diet, exercise, smoking, etc., could have been relevant to the model. It probably would have been easy to ask those questions of participants at the time of their MRI test.
+
+Acknowledgements
+
+alz.org
+Brain Tour. (n.d). Retrieved Dec 10, 2017, from Alzheimer's association website : http://www.alz.org/
+
+When publishing findings that benefit from OASIS data, please include the following grant numbers in the acknowledgements section and in the associated Pubmed Central submission: P50 AG05681, P01 AG03991, R01 AG021910, P20 MH071616, U24 RR0213
+OASIS: Longitudinal MRI Data in Nondemented and Demented Older Adults. (n.d). Retrieved Dec 6, 2017 from Open Access Series of Imaging Studies (OASIS) website : http://www.oasis-brains.org/
+
